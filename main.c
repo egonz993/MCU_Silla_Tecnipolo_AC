@@ -229,7 +229,7 @@ int main(void)
 				FUN_LA();
 				break;
 		  case STATE_ESC:
-				FUN_ESC();
+			  FUN_ESC();
 				break;
 		  case STATE_M0:
 				FUN_M0();
@@ -637,6 +637,7 @@ void FUN_ME(){
 		HAL_GPIO_WritePin(OUT_SS_GPIO_Port, OUT_SS_Pin, GPIO_PIN_SET);
 	}
 
+	HAL_GPIO_WritePin(BUZZ_GPIO_Port, BUZZ_Pin, GPIO_PIN_RESET);
 	updatePosition();
 }
 
@@ -715,6 +716,7 @@ void FUN_LA(){
 	HAL_GPIO_TogglePin(OUT_LA_GPIO_Port, OUT_LA_Pin);
 	while(HAL_GPIO_ReadPin(IN_LA_GPIO_Port, IN_LA_Pin)==GPIO_PIN_RESET);
 
+	STATE = STATE_SBY;
 	BEEP();
 }
 
@@ -795,7 +797,9 @@ void FUN_M0(){
 		HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 	}
 
-	Contador_Espaldar = MAX_TIME_SE;
+	if(FLAG_STOP_MOTORS != 2){
+		Contador_Espaldar = MAX_TIME_SE;
+	}
 	updatePosition();
 	BEEP();
 
@@ -809,7 +813,9 @@ void FUN_M0(){
 		HAL_GPIO_WritePin(OUT_BS_GPIO_Port, OUT_BS_Pin, GPIO_PIN_SET);
 		//HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 	}
-	Contador_Silla = 0;
+	if(FLAG_STOP_MOTORS != 2){
+		Contador_Silla = 0;
+	}
 	updatePosition();
 	BEEP();
 
@@ -863,7 +869,7 @@ void FUN_M1(){
 				//HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 			}
 
-			if(FLAG_STOP_MOTORS == 0){
+			if(FLAG_STOP_MOTORS != 2){
 				Contador_Silla = TIME_S_M1;
 				Contador_Espaldar = TIME_E_M1;
 			}
@@ -917,7 +923,7 @@ void FUN_M1(){
 			}
 		}
 
-		if(FLAG_STOP_MOTORS == 0){
+		if(FLAG_STOP_MOTORS != 2){
 			Contador_Silla = TIME_S_M1;
 			Contador_Espaldar = TIME_E_M1;
 		}
@@ -980,7 +986,7 @@ void FUN_M2(){
 
 			updatePosition();
 
-			if(FLAG_STOP_MOTORS == 0){
+			if(FLAG_STOP_MOTORS != 2){
 				Contador_Silla = TIME_S_M2;
 				Contador_Espaldar = TIME_E_M2;
 			}
@@ -1034,7 +1040,7 @@ void FUN_M2(){
 			}
 		}
 
-		if(FLAG_STOP_MOTORS == 0){
+		if(FLAG_STOP_MOTORS != 2){
 			Contador_Silla = TIME_S_M2;
 			Contador_Espaldar = TIME_E_M2;
 		}
@@ -1066,7 +1072,9 @@ void FUN_M3(){
 		HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 	}
 
-	Contador_Espaldar = 0;
+	if(FLAG_STOP_MOTORS != 2){
+		Contador_Espaldar = 0;
+	}
 	updatePosition();
 
 
@@ -1132,6 +1140,7 @@ void MCU_Init(){
 
 void All_Off(){
 	STATE = STATE_SBY;
+	FLAG_STOP_MOTORS = 0;
 
 	HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_RESET);
 	HAL_GPIO_WritePin(OUT_SS_GPIO_Port, OUT_SS_Pin, GPIO_PIN_RESET);
@@ -1146,6 +1155,9 @@ void All_Off(){
 }
 
 void FUN_CALIBRA(){
+	char buffer[20] = "";
+
+
 	long int TIME_SS;	//Tiempo sube silla
 	long int TIME_BS;	//Tiempo baja silla
 	long int TIME_SE;	//Tiempo baja espaldar
@@ -1187,6 +1199,10 @@ void FUN_CALIBRA(){
 	TIME_SS = Contador_Silla;
 	HAL_Delay(500);
 
+	sprintf(buffer, "\nTIME_SS = %u\n", TIME_SS);
+	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	HAL_Delay(100);
+
 
 	//Baja silla hasta el microsuiche y guarda el tiempo
 	STATE = STATE_SS; //SS para que sume y no reste
@@ -1200,6 +1216,9 @@ void FUN_CALIBRA(){
 	TIME_BS = Contador_Silla;
 	HAL_Delay(500);
 
+	sprintf(buffer, "\nTIME_BS = %u\n", TIME_BS);
+	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	HAL_Delay(100);
 
 	/* CALIBRACION MOTOR ESPALDAR */
 
@@ -1216,6 +1235,10 @@ void FUN_CALIBRA(){
 	TIME_BE = Contador_Espaldar;
 	HAL_Delay(500);
 
+	sprintf(buffer, "\nTIME_BE = %u\n", TIME_BE);
+	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	HAL_Delay(100);
+
 	//Sube espaldar hasta el microsuiche y guarda el tiempo
 	STATE_TIMER = TIMER_UPDATE;
 	STATE = STATE_SE;
@@ -1229,6 +1252,9 @@ void FUN_CALIBRA(){
 	TIME_SE = Contador_Espaldar;
 	HAL_Delay(500);
 
+	sprintf(buffer, "\nTIME_SE = %u\n", TIME_SE);
+	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	HAL_Delay(100);
 
 	//Maximo tiempo de Sube Silla igual al mayor valor medido
 	if(TIME_SS > TIME_BS){
@@ -1236,6 +1262,10 @@ void FUN_CALIBRA(){
 	}else{
 		MAX_TIME_SS = TIME_BS;
 	}   MIN_TIME_SS = 0;
+
+	sprintf(buffer, "\nMAX_TIME_SS = %u\n", MAX_TIME_SS);
+	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	HAL_Delay(100);
 
 
 	//Maximo tiempo de Sube Espaldar igual al mayor valor medido
@@ -1245,12 +1275,15 @@ void FUN_CALIBRA(){
 		MAX_TIME_SE = TIME_BE;
 	}	MIN_TIME_SE = 0;
 
+	sprintf(buffer, "\nMAX_TIME_SE = %u\n", MAX_TIME_SE);
+	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	HAL_Delay(100);
 
 	/* SE ESCRIBEN LOS DATOS OBTENIDOS EN MEMORIA */
 
 	writeToEEPROM (FLASH_MAX_TIME_SS, MAX_TIME_SS);
 	writeToEEPROM (FLASH_MAX_TIME_SE, MAX_TIME_SE);
-	writeToEEPROM (FLASH_MIN_TIME_SS, MIN_TIME_SS);
+	writeToEEPROM (FLASH_MIN_TIME_SE, MIN_TIME_SE);
 	writeToEEPROM (FLASH_MIN_TIME_SE, MIN_TIME_SE);
 
 	//Se actualiza posición de silla y espaldar
@@ -1331,7 +1364,10 @@ void FUN_CHECK(){
 
 int stop_teclas(){
 
-	if(FLAG_STOP_MOTORS == 0){
+	if(FLAG_STOP_MOTORS == 0){	//M0 = Activacion de tecla... M1 = Loop de funcion
+		STATE_TIMER = TIMER_NO_CHANGE;
+		HAL_Delay(1000);
+		STATE_TIMER = TIMER_UPDATE;
 		FLAG_STOP_MOTORS = 1;
 	}else if(FLAG_STOP_MOTORS == 2){
 		return HAL_ERROR;
@@ -1506,12 +1542,12 @@ void updatePosition(){
 /* FUNCIONES DE UART */
 
 void Send_UART_TX1(){
-/*
+
 	char buffer[50] = "";
 	sprintf(buffer, "\nTIME_S = %u\nTIME_E = %u\n\n", TIME_S, TIME_E);
 	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
 	HAL_Delay(250);
-*/
+
 }
 
 /* USER CODE END 4 */
