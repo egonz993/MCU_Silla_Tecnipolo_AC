@@ -51,11 +51,11 @@
 #define STATE_M3		10		//MEMORIA M3
 #define STATE_ME		99		//EMERGENCIA
 
-#define TIMER_UPDATE	1
-#define TIMER_NO_CHANGE	0
+#define TIMER_UPDATE	1		//PERMITE ACTUALIZAR TIEMPOS DEPENDIENDO DEL STATE
+#define TIMER_NO_CHANGE	0		//NO PERMITE ACTUALIZAR TIEMPOS
 
-#define ESC_POS_HIGH	1
-#define ESC_POS_LOW		0
+#define ESC_POS_HIGH	1		//LA SILLA ESTA EN POSICION DE ESCUPIR
+#define ESC_POS_LOW		0		//LA ESCUPIDERA ESTA EN CUALQUIER POSICION
 
 /* USER CODE END PD */
 
@@ -73,15 +73,17 @@ UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 
-int STATE;
-int STATE_TIMER;
-int ESC_POS;
+int STATE;						//ALMACENA LOS ESTADOS
+int STATE_TIMER;				//TIMER CAMBIA O NO?
+int ESC_POS;					//POICION ESCUPIDERA
 
-int FLAG_STOP_MOTORS = 0;
+int FLAG_STOP_MOTORS;			//MOTORES DETENIDOS POR TECLAS?
+int FLAG_INTERRUPT;				//MOTORES DETENIDOS POR MICROSUICHES?
 
-int32_t Contador_Silla;
-int32_t Contador_Espaldar;
+int32_t Contador_Silla;			//POSICION DE SILLA
+int32_t Contador_Espaldar;		//POSICION DEL ESPALDAR
 
+//====================================================VARIABLES DE EEPROM ALMACENADAS EN LA RAM===========================//
 int32_t TIME_S;
 int32_t TIME_E;
 int32_t TIME_S_M1;
@@ -96,6 +98,7 @@ int32_t MIN_TIME_SE = 0;
 int32_t FLAG_CALIBRA = 0;
 int32_t CONT_EEPROM = 0;
 
+//====================================================VARIABLES ALMACENADAS EN LA EEPROM==================================//
 uint32_t FLASH_TIME_S  	    = 0x08080000 + 32*0;
 uint32_t FLASH_TIME_E 	    = 0x08080000 + 32*1;
 uint32_t FLASH_TIME_S_M1    = 0x08080000 + 32*2;
@@ -107,10 +110,10 @@ uint32_t FLASH_MAX_TIME_SE  = 0x08080000 + 32*7;
 uint32_t FLASH_MIN_TIME_SS  = 0x08080000 + 32*8;
 uint32_t FLASH_MIN_TIME_SE  = 0x08080000 + 32*9;
 uint32_t FLASH_FLAG_CALIBRA = 0x08080000 + 32*10;
-uint32_t FLASH_CONT_EEPROM 		= 0x08080000 + 32*11;
+uint32_t FLASH_CONT_EEPROM	= 0x08080000 + 32*11;
 
 
-char buffer[30] = "";
+char buffer[30] = "";				//BUFFER PARA UART_Tx
 
 /* USER CODE END PV */
 
@@ -124,7 +127,7 @@ static void MX_USART1_UART_Init(void);
 
 //Funciones de Estado
 void FUN_ME();			//Funcion Emergencia
-void FUN_SBY();			//Funcion Stand By
+void FUN_SBY();			//Funcion Standby
 void FUN_SS();			//Funcion Sube Silla
 void FUN_BS();			//Funcion Baja Silla
 void FUN_SE();			//Funcion Sube Espaldar
@@ -138,23 +141,22 @@ void FUN_M3();			//Funcion Memoria M3
 
 void BEEP();			//Beep suena en pruebas
 void BEEPx(int x);		//Beep suena siempre
-void MCU_Init();		//Inicializar variables
+void MCU_Init();		//Inicializar MCU
 void All_Off();			//Apagar motores
 void FUN_CALIBRA();		//Calibrcion
 void FUN_CHECK();		//Chequeo de entradas
 
-int stop_teclas();		//Parar motores al precionar tecla
-int stop_tiempos();		//Parar motores al exceder timer, base de tiempo 1ms
-int stop_microsuiches();//Parar motores al activar microsuiche
+int stop_teclas();		//Detiene motores al precionar teclas en M0, M1, M2, M3, ESC, CALIBRA
+int stop_tiempos();		//Detiene motores al exceder timer, base de tiempo 1ms
+int stop_microsuiches();//Detiene motores al activar microsuiches
 
-//Funciones de EEPROM
-int32_t readFromEEPROM (uint32_t address);
-void writeToEEPROM (uint32_t address, int32_t value);
-void getEEPROM();
-void updatePosition();
+void Send_UART_TX1();	//Enviar datos por UART
 
-//Funciones de UART
-void Send_UART_TX1();
+int32_t readFromEEPROM (uint32_t address);					//Leer valor de EEPROM
+void writeToEEPROM (uint32_t address, int32_t value);		//Escribir valor en EEPROM
+void getEEPROM();											//Obtener variables de EEPROM y guardarlas en RAM
+void updatePosition();										//Actualizar posicion de silla en EEPROM
+
 
 /* USER CODE END PFP */
 
@@ -196,52 +198,53 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  MCU_Init();		//Inicializar variables
+  //====================================================INICIALIZAR MCU==================================//
+  MCU_Init();
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+  while (1){
 
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
 
+	  //====================================================EVALUAR ESTADOS==================================//
 		switch(STATE){
 		  case STATE_SBY:
-				FUN_SBY();
+				FUN_SBY();	//STANDBY
 				break;
 		  case STATE_SS:
-				FUN_SS();
+				FUN_SS();	//SUBE SILLA
 				break;
 		  case STATE_BS:
-				FUN_BS();
+				FUN_BS();	//BAJA SILLA
 				break;
 		  case STATE_SE:
-				FUN_SE();
+				FUN_SE();	//SUBE ESPALDAR
 				break;
 		  case STATE_BE:
-				FUN_BE();
+				FUN_BE();	//BAJA ESPALDAR
 				break;
 		  case STATE_LA:
-				FUN_LA();
+				FUN_LA();	//LAMPARA
 				break;
 		  case STATE_ESC:
-			  FUN_ESC();
+			  FUN_ESC();	//ESCUPIDERA
 				break;
 		  case STATE_M0:
-				FUN_M0();
+				FUN_M0();	//MEMORIA 0
 				break;
 		  case STATE_M1:
-				FUN_M1();
+				FUN_M1();	//MEMORIA 1
 				break;
 		  case STATE_M2:
-				FUN_M2();
+				FUN_M2();	//MEMORIA 2
 				break;
 		  case STATE_M3:
-				FUN_M3();
+				FUN_M3();	//MEMORIA 3
 				break;
 		}
   }
@@ -315,7 +318,7 @@ static void MX_ADC_Init(void)
   hadc.Init.OversamplingMode = DISABLE;
   hadc.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV1;
   hadc.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc.Init.SamplingTime = ADC_SAMPLETIME_12CYCLES_5;
+  hadc.Init.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
   hadc.Init.ScanConvMode = ADC_SCAN_DIRECTION_FORWARD;
   hadc.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc.Init.ContinuousConvMode = DISABLE;
@@ -407,7 +410,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 9600;
+  huart1.Init.BaudRate = 115200;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -455,13 +458,17 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : IN_M3_Pin IN_ESC_Pin IN_LA_Pin IN_ME_Pin
-                           IN_MSS_Pin IN_MBS_Pin IN_MBE_Pin IN_MSE_Pin
-                           IN_CALIBRA_Pin */
-  GPIO_InitStruct.Pin = IN_M3_Pin|IN_ESC_Pin|IN_LA_Pin|IN_ME_Pin
-                          |IN_MSS_Pin|IN_MBS_Pin|IN_MBE_Pin|IN_MSE_Pin
-                          |IN_CALIBRA_Pin;
+  /*Configure GPIO pins : IN_M3_Pin IN_ESC_Pin IN_LA_Pin IN_CALIBRA_Pin */
+  GPIO_InitStruct.Pin = IN_M3_Pin|IN_ESC_Pin|IN_LA_Pin|IN_CALIBRA_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : IN_ME_Pin IN_MSS_Pin IN_MBS_Pin IN_MBE_Pin
+                           IN_MSE_Pin */
+  GPIO_InitStruct.Pin = IN_ME_Pin|IN_MSS_Pin|IN_MBS_Pin|IN_MBE_Pin
+                          |IN_MSE_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
@@ -481,47 +488,74 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI4_15_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI4_15_IRQn);
+
 }
 
 /* USER CODE BEGIN 4 */
 
 /*** INTERRUPCIONES ***/
-/*
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
-	STATE = STATE_ME;
+
+void HAL_GPIO_EXTI_Callback (uint16_t GPIO_Pin){
+
+	/* FUNCION DE INTERRUPCIONES EN MICROSUICHES
+	 * AL ACTIVARSE UN MICROSUICE, LOS MOTORES SE APAGAN
+	 * LA VARIABLE FLAG_INTERRUP SE PONE EN 1 --> stop_microsuiches() == HAL_ERROR
+	 * SE ACTUALIZAN POSICION SEGUN MICROSUICHE ACTIVADO
+	 * */
+	FLAG_INTERRUPT = 1;
+
+	HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(OUT_SS_GPIO_Port, OUT_SS_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(OUT_BS_GPIO_Port, OUT_BS_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(OUT_SE_GPIO_Port, OUT_SE_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(OUT_BE_GPIO_Port, OUT_BE_Pin, GPIO_PIN_RESET);
+
+
+	/*QUE HACE EN EMERGENCIA????*/
+
+	if (GPIO_Pin != IN_ME_Pin) {
+	}
+
 }
-*/
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
-	if((htim -> Instance == TIM2)&&(STATE_TIMER == TIMER_UPDATE)){
-		switch(STATE){
-			case STATE_SBY:
-				//Do Nothing
-			break;
+	/* BASE DE TIEMPO 1ms
+	 *
+	 * VARIABLES:
+	 *   TIMER_UPDATE		PERMITE ACTUALIZAR POSICION
+	 * 	 TIMER_NO_CHANGE	NO PERMITE CTUALIZAR POSICION
+	 *
+	 * CADA VEZ QUE PASA 1ms DEPENDIENDO DEL ESTADO SE SUMARA O RESTARA A LA POSICION DE LA SILLA/ESPALDAR
+	 */
 
-			case STATE_SS:
-				Contador_Silla++;
-			break;
+	if(htim -> Instance == TIM2){
 
-			case STATE_BS:
-			  Contador_Silla--;
-			break;
+		//Actualizar Base de tiempo
+		if(STATE_TIMER == TIMER_UPDATE){
 
-			case STATE_SE:
-			  Contador_Espaldar++;
-			break;
+			//Si esta subiendo incrementa el contador
+                        if(STATE == STATE_SS){
+                        	Contador_Silla++;
+                        }
 
-			case STATE_BE:
-			  Contador_Espaldar--;
-			break;
+			//Si esta bajando decrementa el contador
+                        if(STATE == STATE_BS){
+                        	Contador_Silla--;
+                        }
 
-			case STATE_LA:
-				//Do Nothing
-			break;
+			//Si esta subiendo incrementa el contador
+                        if(STATE == STATE_SE){
+                        	Contador_Espaldar++;
+                        }
 
-			case STATE_ESC:
-				//Do Nothing
-			break;
+			//Si esta bajando decrementa el contador
+                        if(STATE == STATE_BE){
+                        	Contador_Espaldar--;
+                        }
 		}
 	}
 }
@@ -629,6 +663,7 @@ void FUN_ME(){
 	STATE = STATE_SS;
 
 	//Subir Silla
+	FLAG_INTERRUPT = 0;
 	while((HAL_GPIO_ReadPin(IN_ME_GPIO_Port, IN_ME_Pin)==GPIO_PIN_SET)
 			&&(HAL_GPIO_ReadPin(IN_MSS_GPIO_Port, IN_MSS_Pin)==GPIO_PIN_RESET)
 			&&(stop_microsuiches() == HAL_OK)
@@ -645,6 +680,7 @@ void FUN_SS(){
 	BEEP();
 
 	//SUBE SILLA
+	FLAG_INTERRUPT = 0;
 	STATE_TIMER = TIMER_UPDATE;
 	while((HAL_GPIO_ReadPin(IN_SS_GPIO_Port, IN_SS_Pin)==GPIO_PIN_RESET)
 	  && (stop_microsuiches() == HAL_OK)
@@ -662,6 +698,7 @@ void FUN_BS(){
 	BEEP();
 
 	//BAJA SILLA
+	FLAG_INTERRUPT = 0;
 	STATE_TIMER = TIMER_UPDATE;
 	while((HAL_GPIO_ReadPin(IN_BS_GPIO_Port, IN_BS_Pin)==GPIO_PIN_RESET)
 	  && (stop_microsuiches() == HAL_OK)
@@ -679,6 +716,7 @@ void FUN_SE(){
 	BEEP();
 
 	//SUBE ESPALDAR
+	FLAG_INTERRUPT = 0;
 	STATE_TIMER = TIMER_UPDATE;
 	while((HAL_GPIO_ReadPin(IN_SE_GPIO_Port, IN_SE_Pin)==GPIO_PIN_RESET)
 	  && (stop_microsuiches() == HAL_OK)
@@ -696,6 +734,7 @@ void FUN_BE(){
 	BEEP();
 
 	//BAJA ESPALDAR
+	FLAG_INTERRUPT = 0;
 	STATE_TIMER = TIMER_UPDATE;
 	while((HAL_GPIO_ReadPin(IN_BE_GPIO_Port, IN_BE_Pin)==GPIO_PIN_RESET)
 	  && (stop_microsuiches() == HAL_OK)
@@ -735,8 +774,10 @@ void FUN_ESC(){
 		//Subir Espaldar hasta el microcuiche
 		STATE_TIMER = TIMER_UPDATE;
 		STATE = STATE_SE;
+		FLAG_INTERRUPT = 0;
 		while(stop_microsuiches() == HAL_OK
 		  && stop_teclas() == HAL_OK
+		  && stop_tiempos() == HAL_OK
 		  && (STATE != STATE_ME)){
 			HAL_GPIO_WritePin(OUT_SE_GPIO_Port, OUT_SE_Pin, GPIO_PIN_SET);
 			HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
@@ -762,7 +803,12 @@ void FUN_ESC(){
 		//Bajar Espaldar hasta llegar a la posicion en la que inicialmente estaba
 		STATE_TIMER = TIMER_UPDATE;
 		STATE = STATE_BE;
-		while(Contador_Espaldar > TIME_E_temp){
+		FLAG_INTERRUPT = 0;
+		while(Contador_Espaldar > TIME_E_temp
+			  && stop_microsuiches() == HAL_OK
+			  && stop_teclas() == HAL_OK
+			  && stop_tiempos() == HAL_OK
+			  && STATE != STATE_ME){
 			HAL_GPIO_WritePin(OUT_BE_GPIO_Port, OUT_BE_Pin, GPIO_PIN_SET);
 			HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 		}
@@ -790,6 +836,7 @@ void FUN_M0(){
 	//Subir Espaldar hasta el microcuiche
 	STATE_TIMER = TIMER_UPDATE;
 	STATE = STATE_SE;
+	FLAG_INTERRUPT = 0;
 	while(stop_microsuiches() == HAL_OK
 	  && stop_teclas() == HAL_OK
 	  && (STATE != STATE_ME)){
@@ -806,6 +853,7 @@ void FUN_M0(){
 
 	//Bajar Silla hasta el microsuiche
 	STATE_TIMER = TIMER_UPDATE;
+	FLAG_INTERRUPT = 0;
 	STATE = STATE_BS;
 	while(stop_microsuiches() == HAL_OK
 	  && stop_teclas() == HAL_OK
@@ -850,9 +898,12 @@ void FUN_M1(){
 		if((TIME_S_M1 < Contador_Silla)&&(TIME_E_M1 > Contador_Espaldar)){
 			STATE_TIMER = TIMER_UPDATE;
 			STATE = STATE_SE;
+			FLAG_INTERRUPT = 0;
 			while(TIME_E_M1 > Contador_Espaldar
-					&& stop_teclas() == HAL_OK
-					&& (HAL_GPIO_ReadPin(IN_MSE_GPIO_Port, IN_MSE_Pin)==GPIO_PIN_RESET)){
+			  && stop_microsuiches() == HAL_OK
+			  && stop_teclas() == HAL_OK
+			  && stop_tiempos() == HAL_OK
+			  && STATE != STATE_ME){
 				HAL_GPIO_WritePin(OUT_SE_GPIO_Port, OUT_SE_Pin, GPIO_PIN_SET);
 				HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 			}
@@ -862,9 +913,12 @@ void FUN_M1(){
 
 			STATE_TIMER = TIMER_UPDATE;
 			STATE = STATE_BS;
+			FLAG_INTERRUPT = 0;
 			while(TIME_S_M1 < Contador_Silla
-					&& stop_teclas() == HAL_OK
-					&& (HAL_GPIO_ReadPin(IN_MBS_GPIO_Port, IN_MBS_Pin)==GPIO_PIN_RESET)){
+			  && stop_microsuiches() == HAL_OK
+			  && stop_teclas() == HAL_OK
+			  && stop_tiempos() == HAL_OK
+			  && STATE != STATE_ME){
 				HAL_GPIO_WritePin(OUT_BS_GPIO_Port, OUT_BS_Pin, GPIO_PIN_SET);
 				//HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 			}
@@ -882,18 +936,24 @@ void FUN_M1(){
 		STATE_TIMER = TIMER_UPDATE;
 		if(TIME_S_M1 > Contador_Silla){
 			STATE = STATE_SS;
+			FLAG_INTERRUPT = 0;
 			while(TIME_S_M1 > Contador_Silla
-					&& stop_teclas() == HAL_OK
-					&& (HAL_GPIO_ReadPin(IN_MSS_GPIO_Port, IN_MSS_Pin)==GPIO_PIN_RESET)){
+			  && stop_microsuiches() == HAL_OK
+			  && stop_teclas() == HAL_OK
+			  && stop_tiempos() == HAL_OK
+			  && STATE != STATE_ME){
 				HAL_GPIO_WritePin(OUT_SS_GPIO_Port, OUT_SS_Pin, GPIO_PIN_SET);
 				HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 			}
 		}
 		else{
 			STATE = STATE_BS;
+			FLAG_INTERRUPT = 0;
 			while(TIME_S_M1 < Contador_Silla
-					&& stop_teclas() == HAL_OK
-					&& (HAL_GPIO_ReadPin(IN_MBS_GPIO_Port, IN_MBS_Pin)==GPIO_PIN_RESET)){
+			  && stop_microsuiches() == HAL_OK
+			  && stop_teclas() == HAL_OK
+			  && stop_tiempos() == HAL_OK
+			  && STATE != STATE_ME){
 				HAL_GPIO_WritePin(OUT_BS_GPIO_Port, OUT_BS_Pin, GPIO_PIN_SET);
 				//HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 			}
@@ -906,18 +966,24 @@ void FUN_M1(){
 		STATE_TIMER = TIMER_UPDATE;
 		if(TIME_E_M1 > Contador_Espaldar){
 			STATE = STATE_SE;
+			FLAG_INTERRUPT = 0;
 			while(TIME_E_M1 > Contador_Espaldar
-					&& stop_teclas() == HAL_OK
-					&& (HAL_GPIO_ReadPin(IN_MSE_GPIO_Port, IN_MSE_Pin)==GPIO_PIN_RESET)){
+			  && stop_microsuiches() == HAL_OK
+			  && stop_teclas() == HAL_OK
+			  && stop_tiempos() == HAL_OK
+			  && STATE != STATE_ME){
 				HAL_GPIO_WritePin(OUT_SE_GPIO_Port, OUT_SE_Pin, GPIO_PIN_SET);
 				HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 			}
 		}
 		else{
 			STATE = STATE_BE;
+			FLAG_INTERRUPT = 0;
 			while(TIME_E_M1 < Contador_Espaldar
-					&& stop_teclas() == HAL_OK
-					&& (HAL_GPIO_ReadPin(IN_MBE_GPIO_Port, IN_MBE_Pin)==GPIO_PIN_RESET)){
+			  && stop_microsuiches() == HAL_OK
+			  && stop_teclas() == HAL_OK
+			  && stop_tiempos() == HAL_OK
+			  && STATE != STATE_ME){
 				HAL_GPIO_WritePin(OUT_BE_GPIO_Port, OUT_BE_Pin, GPIO_PIN_SET);
 				HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 			}
@@ -966,9 +1032,12 @@ void FUN_M2(){
 		if((TIME_S_M2 < Contador_Silla)&&(TIME_E_M2 > Contador_Espaldar)){
 			STATE_TIMER = TIMER_UPDATE;
 			STATE = STATE_SE;
+			FLAG_INTERRUPT = 0;
 			while(TIME_E_M2 > Contador_Espaldar
-					&& stop_teclas() == HAL_OK
-					&& (HAL_GPIO_ReadPin(IN_MSE_GPIO_Port, IN_MSE_Pin)==GPIO_PIN_RESET)){
+			  && stop_microsuiches() == HAL_OK
+			  && stop_teclas() == HAL_OK
+			  && stop_tiempos() == HAL_OK
+			  && STATE != STATE_ME){
 				HAL_GPIO_WritePin(OUT_SE_GPIO_Port, OUT_SE_Pin, GPIO_PIN_SET);
 				HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 			}
@@ -977,9 +1046,12 @@ void FUN_M2(){
 
 			STATE_TIMER = TIMER_UPDATE;
 			STATE = STATE_BS;
+			FLAG_INTERRUPT = 0;
 			while(TIME_S_M2 < Contador_Silla
-					&& stop_teclas() == HAL_OK
-					&& (HAL_GPIO_ReadPin(IN_MBS_GPIO_Port, IN_MBS_Pin)==GPIO_PIN_RESET)){
+			  && stop_microsuiches() == HAL_OK
+			  && stop_teclas() == HAL_OK
+			  && stop_tiempos() == HAL_OK
+			  && STATE != STATE_ME){
 				HAL_GPIO_WritePin(OUT_BS_GPIO_Port, OUT_BS_Pin, GPIO_PIN_SET);
 				//HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 			}
@@ -999,18 +1071,24 @@ void FUN_M2(){
 		STATE_TIMER = TIMER_UPDATE;
 		if(TIME_S_M2 > Contador_Silla){
 			STATE = STATE_SS;
+			FLAG_INTERRUPT = 0;
 			while(TIME_S_M2 > Contador_Silla
-					&& stop_teclas() == HAL_OK
-					&& (HAL_GPIO_ReadPin(IN_MSS_GPIO_Port, IN_MSS_Pin)==GPIO_PIN_RESET)){
+			  && stop_microsuiches() == HAL_OK
+			  && stop_teclas() == HAL_OK
+			  && stop_tiempos() == HAL_OK
+			  && STATE != STATE_ME){
 				HAL_GPIO_WritePin(OUT_SS_GPIO_Port, OUT_SS_Pin, GPIO_PIN_SET);
 				HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 			}
 		}
 		else{
 			STATE = STATE_BS;
+			FLAG_INTERRUPT = 0;
 			while(TIME_S_M2 < Contador_Silla
-					&& stop_teclas() == HAL_OK
-					&& (HAL_GPIO_ReadPin(IN_MBS_GPIO_Port, IN_MBS_Pin)==GPIO_PIN_RESET)){
+			  && stop_microsuiches() == HAL_OK
+			  && stop_teclas() == HAL_OK
+			  && stop_tiempos() == HAL_OK
+			  && STATE != STATE_ME){
 				HAL_GPIO_WritePin(OUT_BS_GPIO_Port, OUT_BS_Pin, GPIO_PIN_SET);
 				//HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 			}
@@ -1023,18 +1101,24 @@ void FUN_M2(){
 		STATE_TIMER = TIMER_UPDATE;
 		if(TIME_E_M2 > Contador_Espaldar){
 			STATE = STATE_SE;
+			FLAG_INTERRUPT = 0;
 			while(TIME_E_M2 > Contador_Espaldar
-					&& stop_teclas() == HAL_OK
-					&& (HAL_GPIO_ReadPin(IN_MSE_GPIO_Port, IN_MSE_Pin)==GPIO_PIN_RESET)){
+			  && stop_microsuiches() == HAL_OK
+			  && stop_teclas() == HAL_OK
+			  && stop_tiempos() == HAL_OK
+			  && STATE != STATE_ME){
 				HAL_GPIO_WritePin(OUT_SE_GPIO_Port, OUT_SE_Pin, GPIO_PIN_SET);
 				HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 			}
 		}
 		else{
 			STATE = STATE_BE;
+			FLAG_INTERRUPT = 0;
 			while(TIME_E_M2 < Contador_Espaldar
-					&& stop_teclas() == HAL_OK
-					&& (HAL_GPIO_ReadPin(IN_MBE_GPIO_Port, IN_MBE_Pin)==GPIO_PIN_RESET)){
+			  && stop_microsuiches() == HAL_OK
+			  && stop_teclas() == HAL_OK
+			  && stop_tiempos() == HAL_OK
+			  && STATE != STATE_ME){
 				HAL_GPIO_WritePin(OUT_BE_GPIO_Port, OUT_BE_Pin, GPIO_PIN_SET);
 				HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 			}
@@ -1065,6 +1149,7 @@ void FUN_M3(){
 	//TREN DEL EMBUR: LA SILLA SE QUEDA IGUAL, EL ESPALDAR HASTA ABAJO
 	STATE_TIMER = TIMER_UPDATE;
 	STATE = STATE_BE;
+	FLAG_INTERRUPT = 0;
 	while(stop_microsuiches() == HAL_OK
 			&& stop_teclas() == HAL_OK
 			&& (HAL_GPIO_ReadPin(IN_MBE_GPIO_Port, IN_MBE_Pin)==GPIO_PIN_RESET)){
@@ -1167,18 +1252,7 @@ void FUN_CALIBRA(){
 	BEEPx(100);BEEPx(100);BEEPx(100);BEEPx(100);BEEPx(100);
 
 	/* IR A POSICIÓN M0 */
-
-	//Subir Espaldar hasta el microcuiche
-	while(HAL_GPIO_ReadPin(IN_MSE_GPIO_Port, IN_MSE_Pin)!=GPIO_PIN_SET){
-		HAL_GPIO_WritePin(OUT_SE_GPIO_Port, OUT_SE_Pin, GPIO_PIN_SET);
-		HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
-	}	All_Off();
-
-	//Bajar Silla hasta el microsuiche
-	while(HAL_GPIO_ReadPin(IN_MBS_GPIO_Port, IN_MBS_Pin)!=GPIO_PIN_SET){
-		HAL_GPIO_WritePin(OUT_BS_GPIO_Port, OUT_BS_Pin, GPIO_PIN_SET);
-		//HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
-	} 	All_Off();
+	FUN_M0();
 
 	//Esperamos 1seg por seguridad
 	HAL_Delay(1000);
@@ -1189,8 +1263,12 @@ void FUN_CALIBRA(){
 	//Sube silla hasta el microsuiche y guarda el tiempo
 	STATE_TIMER = TIMER_UPDATE;
 	STATE = STATE_SS;
+	FLAG_INTERRUPT = 0;
 	Contador_Silla = 0;
-	while(HAL_GPIO_ReadPin(IN_MSS_GPIO_Port, IN_MSS_Pin)!=GPIO_PIN_SET){
+	while(HAL_GPIO_ReadPin(IN_MSS_GPIO_Port, IN_MSS_Pin)!=GPIO_PIN_SET
+	  && stop_teclas() == HAL_OK
+	  && FLAG_INTERRUPT == 0
+	  && STATE != STATE_ME){
 		HAL_GPIO_WritePin(OUT_SS_GPIO_Port, OUT_SS_Pin, GPIO_PIN_SET);
 		HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 	}	All_Off();
@@ -1207,8 +1285,12 @@ void FUN_CALIBRA(){
 	//Baja silla hasta el microsuiche y guarda el tiempo
 	STATE = STATE_SS; //SS para que sume y no reste
 	STATE_TIMER = TIMER_UPDATE;
+	FLAG_INTERRUPT = 0;
 	Contador_Silla = 0;
-	while(HAL_GPIO_ReadPin(IN_MBS_GPIO_Port, IN_MBS_Pin)!=GPIO_PIN_SET){
+	while(HAL_GPIO_ReadPin(IN_MBS_GPIO_Port, IN_MBS_Pin)!=GPIO_PIN_SET
+	  && stop_teclas() == HAL_OK
+	  && FLAG_INTERRUPT == 0
+	  && STATE != STATE_ME){
 		HAL_GPIO_WritePin(OUT_BS_GPIO_Port, OUT_BS_Pin, GPIO_PIN_SET);
 	}	All_Off();
 
@@ -1225,8 +1307,12 @@ void FUN_CALIBRA(){
 	//Baja espaldar hasta el microsuiche y guarda el tiempo
 	STATE_TIMER = TIMER_UPDATE;
 	STATE = STATE_SE;
+	FLAG_INTERRUPT = 0;
 	Contador_Espaldar = 0;
-	while(HAL_GPIO_ReadPin(IN_MBE_GPIO_Port, IN_MBE_Pin)!=GPIO_PIN_SET){
+	while(HAL_GPIO_ReadPin(IN_MBE_GPIO_Port, IN_MBE_Pin)!=GPIO_PIN_SET
+	  && stop_teclas() == HAL_OK
+	  && FLAG_INTERRUPT == 0
+	  && STATE != STATE_ME){
 		HAL_GPIO_WritePin(OUT_BE_GPIO_Port, OUT_BE_Pin, GPIO_PIN_SET);
 		HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 	}	All_Off();
@@ -1242,8 +1328,12 @@ void FUN_CALIBRA(){
 	//Sube espaldar hasta el microsuiche y guarda el tiempo
 	STATE_TIMER = TIMER_UPDATE;
 	STATE = STATE_SE;
+	FLAG_INTERRUPT = 0;
 	Contador_Espaldar = 0;
-	while(HAL_GPIO_ReadPin(IN_MSE_GPIO_Port, IN_MSE_Pin)!=GPIO_PIN_SET){
+	while(HAL_GPIO_ReadPin(IN_MSE_GPIO_Port, IN_MSE_Pin)!=GPIO_PIN_SET
+	  && stop_teclas() == HAL_OK
+	  && FLAG_INTERRUPT == 0
+	  && STATE != STATE_ME){
 		HAL_GPIO_WritePin(OUT_SE_GPIO_Port, OUT_SE_Pin, GPIO_PIN_SET);
 		HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 	}	All_Off();
@@ -1369,9 +1459,13 @@ int stop_teclas(){
 		HAL_Delay(1000);
 		STATE_TIMER = TIMER_UPDATE;
 		FLAG_STOP_MOTORS = 1;
-	}else if(FLAG_STOP_MOTORS == 2){
+	}
+
+	else if(FLAG_STOP_MOTORS == 2){
 		return HAL_ERROR;
 	}
+
+
 
 
 	if(HAL_GPIO_ReadPin(IN_SS_GPIO_Port, IN_SS_Pin)==GPIO_PIN_RESET){
@@ -1455,26 +1549,36 @@ int stop_microsuiches(){
 	if(HAL_GPIO_ReadPin(IN_MSS_GPIO_Port, IN_MSS_Pin)==GPIO_PIN_SET
 		&& STATE == STATE_SS){
 		Contador_Silla = MAX_TIME_SS;
+		FLAG_INTERRUPT = 0;
 		return HAL_ERROR;
 	}
 
 	if(HAL_GPIO_ReadPin(IN_MBS_GPIO_Port, IN_MBS_Pin)==GPIO_PIN_SET
 		&& STATE == STATE_BS){
 		Contador_Silla = 0;
+		FLAG_INTERRUPT = 0;
 		return HAL_ERROR;
 	}
 
 	if(HAL_GPIO_ReadPin(IN_MSE_GPIO_Port, IN_MSE_Pin)==GPIO_PIN_SET
 			&& STATE == STATE_SE){
 		Contador_Espaldar = MAX_TIME_SE;
+		FLAG_INTERRUPT = 0;
 		return HAL_ERROR;
 	}
 
 	if(HAL_GPIO_ReadPin(IN_MBE_GPIO_Port, IN_MBE_Pin)==GPIO_PIN_SET
 			&& STATE == STATE_BE){
 		Contador_Espaldar = 0;
+		FLAG_INTERRUPT = 0;
 		return HAL_ERROR;
 	}
+
+	if(FLAG_INTERRUPT == 1){
+		FLAG_INTERRUPT = 0;
+		return HAL_ERROR;
+	}
+
 
 	return HAL_OK;
 }
@@ -1521,7 +1625,7 @@ void getEEPROM(){
 	MIN_TIME_SS = readFromEEPROM (FLASH_MIN_TIME_SS);
 	MIN_TIME_SE = readFromEEPROM (FLASH_MIN_TIME_SE);
 
-	HAL_Delay(500);
+	//HAL_Delay(500);
 }
 
 void updatePosition(){
@@ -1544,9 +1648,12 @@ void updatePosition(){
 void Send_UART_TX1(){
 
 	char buffer[50] = "";
-	sprintf(buffer, "\nTIME_S = %u\nTIME_E = %u\n\n", TIME_S, TIME_E);
-	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
-	HAL_Delay(250);
+	uint32_t uart_buf_len;
+
+
+	uart_buf_len = sprintf(buffer, "\nTIME_S = %u\nTIME_E = %u\n\n", TIME_S, TIME_E);
+	HAL_UART_Transmit(&huart1, (uint8_t *)buffer, uart_buf_len, 5);
+	HAL_Delay(10);
 
 }
 
