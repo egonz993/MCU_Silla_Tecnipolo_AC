@@ -1,8 +1,8 @@
 /* USER CODE BEGIN Header */
 
-/* VERSION PROBADA 2020 12 20
+/* VERSION PROBADA 2022 09 30
  * VERSION SOLO PARA TARJETA AC
- * SE ELIMINAN FUNCIONES DE DC
+ * CORREGIDA FUNCION EMERGENCIA, NO ACTIVABA EN FUNCIONES MEMORIAS
  */
 
 /**
@@ -19,6 +19,22 @@
   * the "License"; You may not use this file except in compliance with the
   * License. You may obtain a copy of the License at:
   *                        opensource.org/licenses/BSD-3-Clause
+  *
+  ******************************************************************************
+  * 23-FEB-2021 - 9:00 PM - PRUEBA EN TECNIPOLO - EDUARDO DANIEL DON LEONARDO
+  * 2-MZO-2021 - 10:20 AM - Se entra a función CHEK con Solo M0 + RST presionadas al inicio
+  * El cambio se hace en MCU_Init()
+  * ----------------------------------------------------------------------------
+  * 4-MZO-2021 - 7:52 PM - CAMBIO PARA CONTAR INTERRUPCIONES
+  * SE hacen cambios en EXTI y TIM
+  * ----------------------------------------------------------------------------
+  * 5-MZO-2021 - 10:15 PM - SE AGREGAN Y CORRIGNE MENSAJES TX-UART
+  * SE verifico todo el funcionamiento, incluso con interrupciones
+  * Tambien se hace calibracion y se verifica todo funciona ok
+  * ----------------------------------------------------------------------------
+  * VERSION PROBADA 2022 09 30
+  * SOLO PARA TARJETA AC
+  * CORREGIDA FUNCION EMERGENCIA, NO ACTIVABA EN FUNCIONES MEMORIAS
   *
   ******************************************************************************
   */
@@ -74,14 +90,16 @@ UART_HandleTypeDef huart1;
 /* USER CODE BEGIN PV */
 
 int STATE;						//ALMACENA LOS ESTADOS
-int STATE_TIMER;				//TIMER CAMBIA O NO?
-int ESC_POS;					//POICION ESCUPIDERA
+int STATE_TIMER;				//TIMER CAMBIA O NO? // (1)=TIMER_UPDATE. (0)=TIMER_NO_CHANGE
+int ESC_POS;					//POICION ESCUPIDERA // (1)=ESC_POS_HIGH. (0)=ESC_POS_LOW
 
 int FLAG_STOP_MOTORS;			//MOTORES DETENIDOS POR TECLAS?
-int FLAG_INTERRUPT;				//MOTORES DETENIDOS POR MICROSUICHES?
+int FLAG_INTERRUPT;				//MOTORES DETENIDOS POR MICROSUICHES? //(0)=NO INT. (1)=INT (2)=VARIAS INT
 
 int32_t Contador_Silla;			//POSICION DE SILLA
 int32_t Contador_Espaldar;		//POSICION DEL ESPALDAR
+
+int32_t Contador_Rebotes;		//PARA EVITAR REBOTES EN MICROSUICHES
 
 //====================================================VARIABLES DE EEPROM ALMACENADAS EN LA RAM===========================//
 int32_t TIME_S;
@@ -113,7 +131,9 @@ uint32_t FLASH_FLAG_CALIBRA = 0x08080000 + 32*10;
 uint32_t FLASH_CONT_EEPROM	= 0x08080000 + 32*11;
 
 
-char buffer[30] = "";				//BUFFER PARA UART_Tx
+//char buffer[30] = "";				//BUFFER PARA UART_Tx
+uint8_t uart_buf_len;	// ancho del buffer de UART
+uint8_t uart_buf[80];	// buffer del UART
 
 /* USER CODE END PV */
 
@@ -151,6 +171,9 @@ int stop_tiempos();		//Detiene motores al exceder timer, base de tiempo 1ms
 int stop_microsuiches();//Detiene motores al activar microsuiches
 
 void Send_UART_TX1();	//Enviar datos por UART
+
+void Tx_Tiempos_EEprom();	// Transmite los tiempos TIME_XXX de EEPROM - 21.84 ms
+
 
 int32_t readFromEEPROM (uint32_t address);					//Leer valor de EEPROM
 void writeToEEPROM (uint32_t address, int32_t value);		//Escribir valor en EEPROM
@@ -468,7 +491,7 @@ static void MX_GPIO_Init(void)
                            IN_MSE_Pin */
   GPIO_InitStruct.Pin = IN_ME_Pin|IN_MSS_Pin|IN_MBS_Pin|IN_MBE_Pin
                           |IN_MSE_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
@@ -496,7 +519,7 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-/*** INTERRUPCIONES ***/
+//======================*** INTERRUPCIONES ***====================//
 
 void HAL_GPIO_EXTI_Callback (uint16_t GPIO_Pin){
 
@@ -505,18 +528,35 @@ void HAL_GPIO_EXTI_Callback (uint16_t GPIO_Pin){
 	 * LA VARIABLE FLAG_INTERRUP SE PONE EN 1 --> stop_microsuiches() == HAL_ERROR
 	 * SE ACTUALIZAN POSICION SEGUN MICROSUICHE ACTIVADO
 	 * */
-	FLAG_INTERRUPT = 1;
 
-	HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(OUT_SS_GPIO_Port, OUT_SS_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(OUT_BS_GPIO_Port, OUT_BS_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(OUT_SE_GPIO_Port, OUT_SE_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(OUT_BE_GPIO_Port, OUT_BE_Pin, GPIO_PIN_RESET);
+	// FLAG_INTERRUPT = 2 --> SE ACABA DE DESACTIVAR UN MICROSUICHE
+	if((GPIO_Pin == OUT_SS_Pin  &&  HAL_GPIO_ReadPin(OUT_SS_GPIO_Port, OUT_SS_Pin) == GPIO_PIN_RESET)
+	|| (GPIO_Pin == OUT_BS_Pin  &&  HAL_GPIO_ReadPin(OUT_BS_GPIO_Port, OUT_BS_Pin) == GPIO_PIN_RESET)
+	|| (GPIO_Pin == OUT_SE_Pin  &&  HAL_GPIO_ReadPin(OUT_SE_GPIO_Port, OUT_SE_Pin) == GPIO_PIN_RESET)
+	|| (GPIO_Pin == OUT_BE_Pin  &&  HAL_GPIO_ReadPin(OUT_BE_GPIO_Port, OUT_BE_Pin) == GPIO_PIN_RESET)){
+
+		FLAG_INTERRUPT = 2;		//SE PONE LA BANDERA EN 2 PARA EVITAR REBOTES (TRUCO)
+								//LA BANDERA VUELVE A SER CERO; LUEGO DE UNOS CUANTOS MILISEGUNDOS
+	}
 
 
-	/*QUE HACE EN EMERGENCIA????*/
+	// FLAG_INTERRUPT = 1 --> SE ACABA DE ACTIVAR UN MICROSUICHE
+	if((GPIO_Pin == OUT_SS_Pin  &&  HAL_GPIO_ReadPin(OUT_SS_GPIO_Port, OUT_SS_Pin) == GPIO_PIN_SET)
+	|| (GPIO_Pin == OUT_BS_Pin  &&  HAL_GPIO_ReadPin(OUT_BS_GPIO_Port, OUT_BS_Pin) == GPIO_PIN_SET)
+	|| (GPIO_Pin == OUT_SE_Pin  &&  HAL_GPIO_ReadPin(OUT_SE_GPIO_Port, OUT_SE_Pin) == GPIO_PIN_SET)
+	|| (GPIO_Pin == OUT_BE_Pin  &&  HAL_GPIO_ReadPin(OUT_BE_GPIO_Port, OUT_BE_Pin) == GPIO_PIN_SET)){
 
-	if (GPIO_Pin != IN_ME_Pin) {
+		if(FLAG_INTERRUPT != 2){ 					//TRUCO PARA EVITAR REBOTES
+			//ACTIVAR BANDERA DE INTERRUPCION
+			FLAG_INTERRUPT = 1;
+
+			//APAGAR TODOS LOS MOTORES
+			HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_RESET);
+			HAL_GPIO_WritePin(OUT_SS_GPIO_Port, OUT_SS_Pin, GPIO_PIN_RESET);
+			HAL_GPIO_WritePin(OUT_BS_GPIO_Port, OUT_BS_Pin, GPIO_PIN_RESET);
+			HAL_GPIO_WritePin(OUT_SE_GPIO_Port, OUT_SE_Pin, GPIO_PIN_RESET);
+			HAL_GPIO_WritePin(OUT_BE_GPIO_Port, OUT_BE_Pin, GPIO_PIN_RESET);
+		}
 	}
 
 }
@@ -538,31 +578,43 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		if(STATE_TIMER == TIMER_UPDATE){
 
 			//Si esta subiendo incrementa el contador
-                        if(STATE == STATE_SS){
-                        	Contador_Silla++;
-                        }
+			if(STATE == STATE_SS){
+				Contador_Silla++;
+			}
 
 			//Si esta bajando decrementa el contador
-                        if(STATE == STATE_BS){
-                        	Contador_Silla--;
-                        }
+			if(STATE == STATE_BS){
+				Contador_Silla--;
+			}
 
 			//Si esta subiendo incrementa el contador
-                        if(STATE == STATE_SE){
-                        	Contador_Espaldar++;
-                        }
+			if(STATE == STATE_SE){
+				Contador_Espaldar++;
+			}
 
 			//Si esta bajando decrementa el contador
-                        if(STATE == STATE_BE){
-                        	Contador_Espaldar--;
-                        }
+			if(STATE == STATE_BE){
+				Contador_Espaldar--;
+			}
 		}
+
+
+		//TRUCO PARA EVITAR REBOTES; EL CONTADOR DE REBOTES SE PONDRA EN UNO 50ms DESPUES DE HABERSE DESACTUVADO EL MICROSUICHE
+		if(FLAG_INTERRUPT == 2){
+			Contador_Rebotes++;
+
+			if(Contador_Rebotes == 50){
+				Contador_Rebotes = 0;
+				FLAG_INTERRUPT = 0;
+			}
+		}
+
 	}
 }
 
 
 
-/*** DIAGRMA DE ESTADOS ***/
+//====================*** DIAGRAMA DE ESTADOS ***============================/
 
 void  FUN_SBY(){
 	//Apagar motores
@@ -655,7 +707,7 @@ void  FUN_SBY(){
 	}
 }
 
-
+//========================== EMERGENCIA ================================
 void FUN_ME(){
 	//Encender Buzzer en señal de alerta
 	HAL_GPIO_WritePin(BUZZ_GPIO_Port, BUZZ_Pin, GPIO_PIN_SET);
@@ -675,8 +727,9 @@ void FUN_ME(){
 	HAL_GPIO_WritePin(BUZZ_GPIO_Port, BUZZ_Pin, GPIO_PIN_RESET);
 	updatePosition();
 }
-
+//========================== SUBE SILLA ================================
 void FUN_SS(){
+	ESC_POS = ESC_POS_LOW;
 	BEEP();
 
 	//SUBE SILLA
@@ -684,8 +737,9 @@ void FUN_SS(){
 	STATE_TIMER = TIMER_UPDATE;
 	while((HAL_GPIO_ReadPin(IN_SS_GPIO_Port, IN_SS_Pin)==GPIO_PIN_RESET)
 	  && (stop_microsuiches() == HAL_OK)
-	  && (stop_tiempos() == HAL_OK)
+	  /*&& (stop_tiempos() == HAL_OK)*/
 	  && (STATE != STATE_ME)){
+		stop_tiempos();
 		HAL_GPIO_WritePin(OUT_SS_GPIO_Port, OUT_SS_Pin, GPIO_PIN_SET);
 		HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 	}
@@ -693,8 +747,9 @@ void FUN_SS(){
 	updatePosition();
 	BEEP();
 }
-
+//========================== BAJA SILLA ================================
 void FUN_BS(){
+	ESC_POS = ESC_POS_LOW;
 	BEEP();
 
 	//BAJA SILLA
@@ -702,8 +757,9 @@ void FUN_BS(){
 	STATE_TIMER = TIMER_UPDATE;
 	while((HAL_GPIO_ReadPin(IN_BS_GPIO_Port, IN_BS_Pin)==GPIO_PIN_RESET)
 	  && (stop_microsuiches() == HAL_OK)
-	  && (stop_tiempos() == HAL_OK)
+	  /*&& (stop_tiempos() == HAL_OK)*/
 	  && (STATE != STATE_ME)){
+		stop_tiempos();
 		HAL_GPIO_WritePin(OUT_BS_GPIO_Port, OUT_BS_Pin, GPIO_PIN_SET);
 		//HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 	}
@@ -711,8 +767,9 @@ void FUN_BS(){
 	updatePosition();
 	BEEP();
 }
-
+//========================== SUBE ESPALDAR ================================
 void FUN_SE(){
+	ESC_POS = ESC_POS_LOW;
 	BEEP();
 
 	//SUBE ESPALDAR
@@ -720,8 +777,9 @@ void FUN_SE(){
 	STATE_TIMER = TIMER_UPDATE;
 	while((HAL_GPIO_ReadPin(IN_SE_GPIO_Port, IN_SE_Pin)==GPIO_PIN_RESET)
 	  && (stop_microsuiches() == HAL_OK)
-	  && (stop_tiempos() == HAL_OK)
+	  /*&& (stop_tiempos() == HAL_OK)*/
 	  && (STATE != STATE_ME)){
+		stop_tiempos();
 		HAL_GPIO_WritePin(OUT_SE_GPIO_Port, OUT_SE_Pin, GPIO_PIN_SET);
 		HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 	}
@@ -729,8 +787,9 @@ void FUN_SE(){
 	updatePosition();
 	BEEP();
 }
-
+//========================== BAJA ESPALDAR ================================
 void FUN_BE(){
+	ESC_POS = ESC_POS_LOW;
 	BEEP();
 
 	//BAJA ESPALDAR
@@ -738,8 +797,9 @@ void FUN_BE(){
 	STATE_TIMER = TIMER_UPDATE;
 	while((HAL_GPIO_ReadPin(IN_BE_GPIO_Port, IN_BE_Pin)==GPIO_PIN_RESET)
 	  && (stop_microsuiches() == HAL_OK)
-	  && (stop_tiempos() == HAL_OK)
+	  /*&& (stop_tiempos() == HAL_OK)*/
 	  && (STATE != STATE_ME)){
+		stop_tiempos();
 		HAL_GPIO_WritePin(OUT_BE_GPIO_Port, OUT_BE_Pin, GPIO_PIN_SET);
 		HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
 	}
@@ -748,17 +808,21 @@ void FUN_BE(){
 	BEEP();
 }
 
+//========================== LAMPARA ================================
 void FUN_LA(){
+	ESC_POS = ESC_POS_LOW;
 	BEEP();
 
 	//LAMPARA
 	HAL_GPIO_TogglePin(OUT_LA_GPIO_Port, OUT_LA_Pin);
+	Tx_Tiempos_EEprom();	// Transmite los tiempos TIME_XXX de EEPROM - 21.84 ms
 	while(HAL_GPIO_ReadPin(IN_LA_GPIO_Port, IN_LA_Pin)==GPIO_PIN_RESET);
 
 	STATE = STATE_SBY;
 	BEEP();
 }
 
+//========================== ESCUPIDERA ================================
 void FUN_ESC(){
 	BEEP();
 
@@ -777,7 +841,7 @@ void FUN_ESC(){
 		FLAG_INTERRUPT = 0;
 		while(stop_microsuiches() == HAL_OK
 		  && stop_teclas() == HAL_OK
-		  && stop_tiempos() == HAL_OK
+		  /*&& stop_tiempos() == HAL_OK*/
 		  && (STATE != STATE_ME)){
 			HAL_GPIO_WritePin(OUT_SE_GPIO_Port, OUT_SE_Pin, GPIO_PIN_SET);
 			HAL_GPIO_WritePin(OUT_MB_DT_GPIO_Port, OUT_MB_DT_Pin, GPIO_PIN_SET);
@@ -825,8 +889,9 @@ void FUN_ESC(){
 	BEEP();
 }
 
-
+//========================== M0 ================================
 void FUN_M0(){
+	ESC_POS = ESC_POS_LOW;
 	BEEP();
 
 	//Apagar Lampara
@@ -869,13 +934,15 @@ void FUN_M0(){
 
 	FLAG_STOP_MOTORS = 0;
 }
-
+//========================== M1 ================================
 void FUN_M1(){
+	ESC_POS = ESC_POS_LOW;
 	BEEP();
 
 	//Apagar Lampara
 	HAL_GPIO_WritePin(OUT_LA_GPIO_Port, OUT_LA_Pin, GPIO_PIN_RESET);
 
+//------ CHEK SI GUARDA POSICION EN MEMORIA M1 ------------
 	//Si el boton se presiona durante mas de 1 segunos, guardar posicion actual en Memoria M1
 	HAL_Delay(1000);
 	if (HAL_GPIO_ReadPin(IN_M1_GPIO_Port, IN_M1_Pin)==GPIO_PIN_RESET){
@@ -891,10 +958,11 @@ void FUN_M1(){
 		BEEPx(100);
 	}
 
+//------ VA A PPSICION M1 ----------------------------------
 	//Si el boton se preiona durante menos de 1 segundos, ir a posicion de Memoria M1
 	else{
 
-		//ESCENARIO ESPECIAL ESPALDAR PRIMERO
+//----- ESCENARIO ESPECIAL ESPALDAR PRIMERO
 		if((TIME_S_M1 < Contador_Silla)&&(TIME_E_M1 > Contador_Espaldar)){
 			STATE_TIMER = TIMER_UPDATE;
 			STATE = STATE_SE;
@@ -932,7 +1000,7 @@ void FUN_M1(){
 		}
 
 
-		//SECUENCIA DE SUBIR/BAJAR SILLA
+//----- SECUENCIA DE SUBIR/BAJAR SILLA
 		STATE_TIMER = TIMER_UPDATE;
 		if(TIME_S_M1 > Contador_Silla){
 			STATE = STATE_SS;
@@ -962,7 +1030,7 @@ void FUN_M1(){
 		updatePosition();
 
 
-		//SECUENCIA DE SUBIR/BAJAR ESPALDAR
+//----- SECUENCIA DE SUBIR/BAJAR ESPALDAR
 		STATE_TIMER = TIMER_UPDATE;
 		if(TIME_E_M1 > Contador_Espaldar){
 			STATE = STATE_SE;
@@ -1005,12 +1073,15 @@ void FUN_M1(){
 	BEEP();
 }
 
+//========================== M2 ================================
 void FUN_M2(){
+	ESC_POS = ESC_POS_LOW;
 	BEEP();
 
 	//Apagar Lampara
 	HAL_GPIO_WritePin(OUT_LA_GPIO_Port, OUT_LA_Pin, GPIO_PIN_RESET);
 
+//------ CHEK SI GUARDA POSICION EN MEMORIA M2 ------------
 	//Si el boton se presiona durante mas de 1 segunos, guardar posicion actual en Memoria M2
 	HAL_Delay(1000);
 	if (HAL_GPIO_ReadPin(IN_M2_GPIO_Port, IN_M2_Pin)==GPIO_PIN_RESET){
@@ -1025,10 +1096,11 @@ void FUN_M2(){
 		BEEPx(100);
 	}
 
+//------ VA A PPSICION M2 ----------------------------------
 	//Si el boton se preiona durante menos de 1 segundos, ir a posicion de Memoria M2
 	else{
 
-		//ESCENARIO ESPECIAL ESPALDAR PRIMERO
+//----- ESCENARIO ESPECIAL ESPALDAR PRIMERO
 		if((TIME_S_M2 < Contador_Silla)&&(TIME_E_M2 > Contador_Espaldar)){
 			STATE_TIMER = TIMER_UPDATE;
 			STATE = STATE_SE;
@@ -1067,7 +1139,7 @@ void FUN_M2(){
 		}
 
 
-		//SECUENCIA DE SUBIR/BAJAR SILLA
+//----- SECUENCIA DE SUBIR/BAJAR SILLA
 		STATE_TIMER = TIMER_UPDATE;
 		if(TIME_S_M2 > Contador_Silla){
 			STATE = STATE_SS;
@@ -1097,7 +1169,7 @@ void FUN_M2(){
 		updatePosition();
 
 
-		//SECUENCIA DE SUBIR/BAJAR ESPALDAR
+//----- SECUENCIA DE SUBIR/BAJAR ESPALDAR
 		STATE_TIMER = TIMER_UPDATE;
 		if(TIME_E_M2 > Contador_Espaldar){
 			STATE = STATE_SE;
@@ -1140,7 +1212,9 @@ void FUN_M2(){
 	BEEP();
 }
 
+//========================== M3 ================================
 void FUN_M3(){
+	ESC_POS = ESC_POS_LOW;
 	BEEP();
 
 	//Apagar Lampara
@@ -1167,8 +1241,9 @@ void FUN_M3(){
 	BEEP();
 }
 
-/*** FUNCIONES ***/
+//=========================*** FUNCIONES ***===============================/
 
+// Beep con Buzzer
 void BEEP(){
 /*
 	HAL_GPIO_WritePin(BUZZ_GPIO_Port, BUZZ_Pin, GPIO_PIN_SET);
@@ -1178,6 +1253,7 @@ void BEEP(){
 */
 }
 
+// Beep X ms con Buzzer
 void BEEPx(int x){
 	HAL_GPIO_WritePin(BUZZ_GPIO_Port, BUZZ_Pin, GPIO_PIN_SET);
 	HAL_Delay(x);
@@ -1185,6 +1261,10 @@ void BEEPx(int x){
 	HAL_Delay(x);
 }
 
+// Inicializa MCU.
+// Pone datos iniciales, Lee datos TIME_XXX de EEPROM -> y los pone en RAM
+// Detecta si Tacla CAL=CALIBRACION o M0=FUN_CHEK al principio
+// Genera 3 Beep = Inicio MCU
 void MCU_Init(){
 	//Apagar todos los motores
 	All_Off();
@@ -1197,6 +1277,9 @@ void MCU_Init(){
 	STATE_TIMER = TIMER_NO_CHANGE;
 	ESC_POS = ESC_POS_LOW;
 
+
+	Contador_Rebotes = 0;
+
 	//Obtener memorias de la EEPROM
 	getEEPROM();
 
@@ -1204,15 +1287,18 @@ void MCU_Init(){
 	Contador_Silla = TIME_S;
 	Contador_Espaldar = TIME_E;
 
+	  //---- PONE MENSAJE "- - - TECNIPOLO SAS - - -"
+	  //---- PONE MENSAJE " VERSION 2 - 2021-FEB-16"
+		uart_buf_len = sprintf(uart_buf, "\n\n- - - TECNIPOLO SAS - - -\r\n VERSION 2 - 2021-MZO-05 \r\n\n");
+		HAL_UART_Transmit(&huart1, (uint8_t *)uart_buf, uart_buf_len, 5);
 
 	//FUNCION DE CALIBRACION
 	if (HAL_GPIO_ReadPin(IN_CALIBRA_GPIO_Port, IN_CALIBRA_Pin)==GPIO_PIN_RESET){
 		FUN_CALIBRA();
 	}
 
-	//FUNCION PARA CHEQUEO DE ENTRADAS
-	else if ((HAL_GPIO_ReadPin(IN_ESC_GPIO_Port, IN_ESC_Pin)==GPIO_PIN_RESET)
-	  &&(HAL_GPIO_ReadPin(IN_LA_GPIO_Port, IN_LA_Pin)==GPIO_PIN_RESET)){
+	//FUNCION PARA CHEQUEO DE TECLADO Y MICROSWITCHES
+	else if (HAL_GPIO_ReadPin(IN_M0_GPIO_Port, IN_M0_Pin)==GPIO_PIN_RESET){
 		FUN_CHECK();
 	}
 
@@ -1223,6 +1309,7 @@ void MCU_Init(){
 
 }
 
+// Apaga todos los Motores o salidas OUT_XX
 void All_Off(){
 	STATE = STATE_SBY;
 	FLAG_STOP_MOTORS = 0;
@@ -1239,8 +1326,11 @@ void All_Off(){
 	//HAL_GPIO_WritePin(BUZZ_GPIO_Port, BUZZ_Pin, GPIO_PIN_RESET);
 }
 
+//=============================== CALIBRACION =============================
+// Hace funcion CALIBRACION
+//1-M0, 2-SS, 3-BS, 4-BE, 5-SE
 void FUN_CALIBRA(){
-	char buffer[20] = "";
+	//char uart_buf[20] = "";
 
 
 	long int TIME_SS;	//Tiempo sube silla
@@ -1251,16 +1341,16 @@ void FUN_CALIBRA(){
 	//Suena 5 beep que indican inicio de calibracion
 	BEEPx(100);BEEPx(100);BEEPx(100);BEEPx(100);BEEPx(100);
 
-	/* IR A POSICIÓN M0 */
+//----------------* IR A POSICIÓN M0 *----------/
 	FUN_M0();
 
 	//Esperamos 1seg por seguridad
 	HAL_Delay(1000);
 
 
-	/* CALIBRACION MOTOR SILLA */
+//-----------CALIBRACION MOTOR SILLA -----------
 
-	//Sube silla hasta el microsuiche y guarda el tiempo
+//---- Sube silla hasta el microsuiche y guarda el tiempo
 	STATE_TIMER = TIMER_UPDATE;
 	STATE = STATE_SS;
 	FLAG_INTERRUPT = 0;
@@ -1277,12 +1367,15 @@ void FUN_CALIBRA(){
 	TIME_SS = Contador_Silla;
 	HAL_Delay(500);
 
-	sprintf(buffer, "\nTIME_SS = %u\n", TIME_SS);
-	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	//sprintf(buffer, "\nTIME_SS = %ld\n", TIME_SS);
+	uart_buf_len = sprintf(uart_buf, "\nTIME_SS = %ld\n", TIME_SS);
+	//HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	//uart_buf_len = sprintf(uart_buf, "STBY - TIME_S = %ld\r\nSTBY - TIME_E = %ld\r\n", TIME_S, TIME_E);
+	HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, uart_buf_len , 10);
 	HAL_Delay(100);
 
 
-	//Baja silla hasta el microsuiche y guarda el tiempo
+//----- Baja silla hasta el microsuiche y guarda el tiempo
 	STATE = STATE_SS; //SS para que sume y no reste
 	STATE_TIMER = TIMER_UPDATE;
 	FLAG_INTERRUPT = 0;
@@ -1298,13 +1391,15 @@ void FUN_CALIBRA(){
 	TIME_BS = Contador_Silla;
 	HAL_Delay(500);
 
-	sprintf(buffer, "\nTIME_BS = %u\n", TIME_BS);
-	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	//sprintf(buffer, "\nTIME_BS = %ld\n", TIME_BS);
+	uart_buf_len = sprintf(uart_buf, "\nTIME_BS = %ld\n", TIME_BS);
+	//HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, uart_buf_len , 10);
 	HAL_Delay(100);
 
-	/* CALIBRACION MOTOR ESPALDAR */
+//----------- CALIBRACION MOTOR ESPALDAR ----------------
 
-	//Baja espaldar hasta el microsuiche y guarda el tiempo
+//----- Baja espaldar hasta el microsuiche y guarda el tiempo
 	STATE_TIMER = TIMER_UPDATE;
 	STATE = STATE_SE;
 	FLAG_INTERRUPT = 0;
@@ -1321,11 +1416,14 @@ void FUN_CALIBRA(){
 	TIME_BE = Contador_Espaldar;
 	HAL_Delay(500);
 
-	sprintf(buffer, "\nTIME_BE = %u\n", TIME_BE);
-	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	//sprintf(buffer, "\nTIME_BE = %ld\n", TIME_BE);
+	uart_buf_len = sprintf(uart_buf, "\nTIME_BE = %ld\n", TIME_BE);
+	//HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, uart_buf_len , 10);
+
 	HAL_Delay(100);
 
-	//Sube espaldar hasta el microsuiche y guarda el tiempo
+//----- Sube espaldar hasta el microsuiche y guarda el tiempo
 	STATE_TIMER = TIMER_UPDATE;
 	STATE = STATE_SE;
 	FLAG_INTERRUPT = 0;
@@ -1342,34 +1440,45 @@ void FUN_CALIBRA(){
 	TIME_SE = Contador_Espaldar;
 	HAL_Delay(500);
 
-	sprintf(buffer, "\nTIME_SE = %u\n", TIME_SE);
-	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	//sprintf(buffer, "\nTIME_SE = %ld\n", TIME_SE);
+	uart_buf_len = sprintf(uart_buf, "\nTIME_SE = %ld\n", TIME_SE);
+	//HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, uart_buf_len , 10);
+
 	HAL_Delay(100);
 
-	//Maximo tiempo de Sube Silla igual al mayor valor medido
+// --------------- EVALUA TIEMPOS MAXIMOS -----------------
+
+//----- Maximo tiempo de Sube Silla igual al mayor valor medido
 	if(TIME_SS > TIME_BS){
 		MAX_TIME_SS = TIME_SS;
 	}else{
 		MAX_TIME_SS = TIME_BS;
 	}   MIN_TIME_SS = 0;
 
-	sprintf(buffer, "\nMAX_TIME_SS = %u\n", MAX_TIME_SS);
-	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	//sprintf(buffer, "\nMAX_TIME_SS = %ld\n", MAX_TIME_SS);
+	uart_buf_len = sprintf(uart_buf, "\nMAX_TIME_SS = %ld\n", MAX_TIME_SS);
+	//HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, uart_buf_len , 10);
+
 	HAL_Delay(100);
 
 
-	//Maximo tiempo de Sube Espaldar igual al mayor valor medido
+//----- Maximo tiempo de Sube Espaldar igual al mayor valor medido
 	if(TIME_SE > TIME_BE){
 		MAX_TIME_SE = TIME_SE;
 	}else{
 		MAX_TIME_SE = TIME_BE;
 	}	MIN_TIME_SE = 0;
 
-	sprintf(buffer, "\nMAX_TIME_SE = %u\n", MAX_TIME_SE);
-	HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	//sprintf(buffer, "\nMAX_TIME_SE = %ld\n", MAX_TIME_SE);
+	uart_buf_len = sprintf(uart_buf, "\nMAX_TIME_SE = %ld\n", MAX_TIME_SE);
+	//HAL_UART_Transmit_IT(&huart1, (uint8_t *)buffer, sizeof(buffer));
+	HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, uart_buf_len , 10);
+
 	HAL_Delay(100);
 
-	/* SE ESCRIBEN LOS DATOS OBTENIDOS EN MEMORIA */
+//----- SE ESCRIBEN LOS DATOS OBTENIDOS EN MEMORIA -----------
 
 	writeToEEPROM (FLASH_MAX_TIME_SS, MAX_TIME_SS);
 	writeToEEPROM (FLASH_MAX_TIME_SE, MAX_TIME_SE);
@@ -1385,6 +1494,8 @@ void FUN_CALIBRA(){
 	writeToEEPROM (FLASH_FLAG_CALIBRA, FLAG_CALIBRA);
 }
 
+// Chekea las TECLAS Y MICROSWITCHES + CAL + AC/DC
+// Al presionar una tecla o actua un microswitche O tope, o tecla CAL o AC/DC, genera Beep hasta que se suelta
 void FUN_CHECK(){
 
 	BEEPx(100);	BEEPx(100);
@@ -1452,6 +1563,8 @@ void FUN_CHECK(){
 	}
 }
 
+// Al presionar una tecla pone FLAG_STOP_MOTORS = 2 y retorna HAL_ERROR
+//---OJO--- no entiendo la otra logica
 int stop_teclas(){
 
 	if(FLAG_STOP_MOTORS == 0){	//M0 = Activacion de tecla... M1 = Loop de funcion
@@ -1513,7 +1626,9 @@ int stop_teclas(){
 	}
 }
 
+// Si Contador_Silla/Espladar >=MAX o <=MIN Tope, -> ponga el valor del Tope MAX/MIN_TIME_XX en Contador_Silla/Espaldar
 int stop_tiempos(){
+
 
 	if((Contador_Silla>=MAX_TIME_SS)&&(STATE == STATE_SS)){
 		BEEP();
@@ -1544,7 +1659,14 @@ int stop_tiempos(){
 	}
 }
 
+// Si hay un microswitche activado (stop), ponga el valor MAX/MIN_TIME_XX o tope -> en el Contador_Silla/Espaldar
+// Apaga la bandera de interrupcion FLAG_INTERRUPT = 0; y retorna HAL_ERROR
+//---OJO--- que pasa si hay MSW EMErgencia?????
 int stop_microsuiches(){
+
+	if(HAL_GPIO_ReadPin(IN_ME_GPIO_Port, IN_ME_Pin)==GPIO_PIN_SET){
+		STATE = STATE_ME;
+	}
 
 	if(HAL_GPIO_ReadPin(IN_MSS_GPIO_Port, IN_MSS_Pin)==GPIO_PIN_SET
 		&& STATE == STATE_SS){
@@ -1585,12 +1707,13 @@ int stop_microsuiches(){
 
 
 
-/* FUNCIONES DE EEPROM */
-
+//================= FUNCIONES DE EEPROM =========================
+// Lee 1 dato de 32 bits en la direccion address de EEPROM
 int32_t readFromEEPROM (uint32_t address){
    return (*(__IO uint32_t *)address);
 }
 
+// Escribe 1 dato de 32 bits en la (direccion address, el dato value) en EEPROM
 void writeToEEPROM (uint32_t address, int32_t value){
   HAL_StatusTypeDef flash_ok = HAL_ERROR;
 
@@ -1611,6 +1734,7 @@ void writeToEEPROM (uint32_t address, int32_t value){
   }
 }
 
+// Lee los datos TIME_X de 32 bits de EEPROM -> y los pone en RAM
 void getEEPROM(){
 	TIME_S = readFromEEPROM (FLASH_TIME_S);
 	TIME_E = readFromEEPROM (FLASH_TIME_E);
@@ -1625,9 +1749,10 @@ void getEEPROM(){
 	MIN_TIME_SS = readFromEEPROM (FLASH_MIN_TIME_SS);
 	MIN_TIME_SE = readFromEEPROM (FLASH_MIN_TIME_SE);
 
-	//HAL_Delay(500);
+	//HAL_Delay(500); //---OJO--- ESTO NO DEBE IR. C/ESCRITURA = 6.8 MS
 }
 
+// Escribe los datos Contador_Silla/Espaldar en TIME_S/E y estos en EEPROM
 void updatePosition(){
 	All_Off();
 
@@ -1637,7 +1762,7 @@ void updatePosition(){
 
 	writeToEEPROM (FLASH_TIME_S, TIME_S);
 	writeToEEPROM (FLASH_TIME_E, TIME_E);
-	HAL_Delay(500);
+	HAL_Delay(500);		//---OJO--- ESTO NO DEBE IR. C/ESCRITURA = 6.8 MS
 
 	Send_UART_TX1();
 }
@@ -1647,14 +1772,58 @@ void updatePosition(){
 
 void Send_UART_TX1(){
 
-	char buffer[50] = "";
-	uint32_t uart_buf_len;
+	//char buffer[50] = "";
+	//uint32_t uart_buf_len;
 
+	//uart_buf_len = sprintf(buffer, "\nTIME_S = %ld\nTIME_E = %ld\n\n", TIME_S, TIME_E);
+	uart_buf_len = sprintf(uart_buf, "\nTIME_S = %ld\nTIME_E = %ld\n\n", TIME_S, TIME_E);
+	//HAL_UART_Transmit(&huart1, (uint8_t *)buffer, uart_buf_len, 5);
+	HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, uart_buf_len , 10);
 
-	uart_buf_len = sprintf(buffer, "\nTIME_S = %u\nTIME_E = %u\n\n", TIME_S, TIME_E);
-	HAL_UART_Transmit(&huart1, (uint8_t *)buffer, uart_buf_len, 5);
-	HAL_Delay(10);
+	HAL_Delay(10);		//---OJO--- ESTO NO DEBE PONERSE - BORRAR O COMENTAR
 
+}
+
+// Transmite los tiempos TIME_XXX de EEPROM - 21.84 ms
+// Lee en 5.2us dato 32 bits = 5.2 x 2 = 10.4 us // y son 5 lecturas 10.4 x 5 = 52 us.. No apreciable
+// Tramsmite cada linea o dato en 1.82ms x 2 = 3.64 ms
+// y son 6 tipos de datos 6 x 3.64 ms = 21.84 toma esta funcion
+void Tx_Tiempos_EEprom(){
+uint32_t aux1;		// auxiliar 1
+uint32_t aux2;		// auxiliar 2
+
+	uart_buf_len = sprintf(uart_buf, "\n\n = TIEMPOS EEPROM =\r\n");
+	HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, uart_buf_len , 5);
+
+	aux1 = readFromEEPROM (FLASH_TIME_S);
+	aux2 = readFromEEPROM (FLASH_TIME_E);
+
+	uart_buf_len = sprintf(uart_buf, "TIME_S     = %ld\nTIME_E     = %ld\n", aux1, aux2);
+	HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, uart_buf_len , 5);
+
+	aux1 = readFromEEPROM (FLASH_TIME_S_M1);
+	aux2 = readFromEEPROM (FLASH_TIME_E_M1);
+
+	uart_buf_len = sprintf(uart_buf, "TIME_S_M1  = %ld\nTIME_E_M1  = %ld\n", aux1, aux2);
+	HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, uart_buf_len , 5);
+
+	aux1 = readFromEEPROM (FLASH_TIME_S_M2);
+	aux2 = readFromEEPROM (FLASH_TIME_E_M2);
+
+	uart_buf_len = sprintf(uart_buf, "TIME_S_M2  = %ld\nTIME_E_M2  = %ld\n", aux1, aux2);
+	HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, uart_buf_len , 5);
+
+	aux1 = readFromEEPROM (FLASH_MAX_TIME_SS);
+	aux2 = readFromEEPROM (FLASH_MAX_TIME_SE);
+
+	uart_buf_len = sprintf(uart_buf, "MAX_TIME_S = %ld\nMAX_TIME_E = %ld\n", aux1, aux2);
+	HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, uart_buf_len , 5);
+
+	aux1 = readFromEEPROM (FLASH_MIN_TIME_SS);
+	aux2 = readFromEEPROM (FLASH_MIN_TIME_SE);
+
+	uart_buf_len = sprintf(uart_buf, "MIN_TIME_S = %ld\nMIN_TIME_E = %ld\n", aux1, aux2);
+	HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, uart_buf_len , 5);
 }
 
 /* USER CODE END 4 */
